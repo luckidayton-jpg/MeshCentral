@@ -95,6 +95,7 @@ type MeshBridge struct {
 type wsReply struct {
 	data   []byte
 	action string
+	err    error
 }
 
 // New validates options and returns a bridge. The connection is established
@@ -181,6 +182,13 @@ func (b *MeshBridge) Connect() error {
 
 // Close closes the socket and fails all in-flight requests.
 func (b *MeshBridge) Close() {
+	b.closeWithErr(fmt.Errorf("evilginx: bridge closed"))
+}
+
+// closeWithErr closes the socket and fails all in-flight requests with the
+// given cause, so callers see why the socket died (read failure, remote
+// close, auth reject) instead of a bare "bridge closed".
+func (b *MeshBridge) closeWithErr(cause error) {
 	b.mu.Lock()
 	conn := b.ws
 	if conn != nil {
@@ -191,7 +199,7 @@ func (b *MeshBridge) Close() {
 	if conn != nil {
 		_ = conn.Close()
 	}
-	b.failPending(fmt.Errorf("evilginx: bridge closed"))
+	b.failPending(cause)
 }
 
 func (b *MeshBridge) failPending(err error) {
@@ -199,12 +207,12 @@ func (b *MeshBridge) failPending(err error) {
 	defer b.pendMu.Unlock()
 	for id, ch := range b.pend {
 		delete(b.pend, id)
-		ch <- wsReply{}
+		ch <- wsReply{err: err}
 	}
 	for act, chans := range b.pendAct {
 		delete(b.pendAct, act)
 		for _, ch := range chans {
-			ch <- wsReply{}
+			ch <- wsReply{err: err}
 		}
 	}
 }
@@ -360,6 +368,9 @@ func (b *MeshBridge) call(action string, extra map[string]interface{}) ([]byte, 
 
 	select {
 	case reply := <-ch:
+		if reply.err != nil {
+			return nil, fmt.Errorf("evilginx: %s: %w", action, reply.err)
+		}
 		if reply.data == nil {
 			return nil, fmt.Errorf("evilginx: %s: bridge closed", action)
 		}
@@ -397,7 +408,7 @@ func (b *MeshBridge) readLoop(conn *websocket.Conn) {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			b.Close()
+			b.closeWithErr(fmt.Errorf("evilginx: bridge closed: %w", err))
 			return
 		}
 		var probe struct {
@@ -408,6 +419,19 @@ func (b *MeshBridge) readLoop(conn *websocket.Conn) {
 			continue
 		}
 		reply := wsReply{data: data, action: probe.Action}
+		if probe.ResponseID == "" && probe.Action == "close" {
+			// Server-initiated disconnect (auth reject, bad origin, …).
+			// MeshCentral sends {action:'close',cause,msg} before dropping
+			// the socket; surface the cause so callers see e.g. "noauth"
+			// instead of a bare websocket close code.
+			var cause struct {
+				Cause string `json:"cause"`
+				Msg   string `json:"msg"`
+			}
+			_ = json.Unmarshal(data, &cause)
+			b.closeWithErr(fmt.Errorf("evilginx: server closed control session: cause=%s msg=%s", cause.Cause, cause.Msg))
+			return
+		}
 		b.pendMu.Lock()
 		if probe.ResponseID != "" {
 			if ch, ok := b.pend[probe.ResponseID]; ok {

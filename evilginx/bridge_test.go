@@ -295,6 +295,67 @@ func TestBridgeTimeoutAndClose(t *testing.T) {
 // Nothing to clean up: the bridge Close() tears down the socket and the
 // httptest server is shutdown by the suite via defer.
 
+func TestBridgeClosePropagatesCause(t *testing.T) {
+	// Server accepts the socket then immediately drops it. The in-flight
+	// call must report the underlying close cause, not a bare
+	// "bridge closed".
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/control.ashx", func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "nope"),
+			time.Now().Add(time.Second))
+		_ = conn.Close()
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	b, err := newTestBridge(t, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	_, err = b.CreateMesh("xavierkit-ops", "")
+	if err == nil {
+		t.Fatal("expected close error")
+	}
+	// The underlying websocket close must be visible in the error chain.
+	if !strings.Contains(err.Error(), "close") {
+		t.Fatalf("error should carry the close cause, got: %v", err)
+	}
+}
+
+func TestBridgeServerCloseMessageSurfacesCause(t *testing.T) {
+	// MeshCentral rejects bad auth with {action:'close',cause,msg} before
+	// dropping the socket. The bridge must surface "noauth" so operators
+	// can tell a wrong login key apart from a dead server.
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/control.ashx", func(w http.ResponseWriter, r *http.Request) {
+		conn, _ := upgrader.Upgrade(w, r, nil)
+		_ = conn.WriteJSON(map[string]interface{}{"action": "close", "cause": "noauth", "msg": "noauth"})
+		_ = conn.Close()
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	b, err := newTestBridge(t, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	_, err = b.CreateMesh("xavierkit-ops", "")
+	if err == nil {
+		t.Fatal("expected auth-reject error")
+	}
+	if !strings.Contains(err.Error(), "noauth") {
+		t.Fatalf("error should carry the server close cause, got: %v", err)
+	}
+}
+
 func TestParseDeviceDetailsEdgeCases(t *testing.T) {
 	// Bare array payload.
 	devs, err := parseDeviceDetails([]byte(`[{"node":{"_id":"node//x","name":"x","conn":3,"pwr":0}},{"node":{"_id":"node//y","name":"y"}}]`))
