@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -466,6 +467,55 @@ func parseDeviceDetails(data []byte) ([]Device, error) {
 	return parseDeviceArray(data)
 }
 
+// describeUnparsedReply renders enough of a reply that failed to parse to tell what
+// shape it actually was, without dumping a whole device list into an error string.
+//
+// The parse error used to be a fixed string, so a reply in an unexpected shape was
+// indistinguishable from an empty one: the device grid answered 502, Cloudflare
+// replaced the body with its own page, and the journal said only "parse
+// getDeviceDetails reply". Nothing said what arrived. A length and a key list is
+// enough to tell "a different envelope" from "an array of something else" without
+// putting device details in a log line.
+func describeUnparsedReply(raw []byte) string {
+	const maxKeys = 24
+	var top map[string]json.RawMessage
+	keys := []string{}
+	if json.Unmarshal(raw, &top) == nil {
+		for k := range top {
+			if len(keys) < maxKeys {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		return fmt.Sprintf("%d bytes, top-level object keys: %v", len(raw), keys)
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) == nil {
+		elem := "an empty array"
+		if len(arr) > 0 {
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(arr[0], &fields) == nil {
+				fk := []string{}
+				for k := range fields {
+					if len(fk) < maxKeys {
+						fk = append(fk, k)
+					}
+				}
+				sort.Strings(fk)
+				elem = fmt.Sprintf("%d entries, first has keys %v", len(arr), fk)
+			} else {
+				elem = fmt.Sprintf("%d entries, first is not an object", len(arr))
+			}
+		}
+		return fmt.Sprintf("%d bytes, array: %s", len(raw), elem)
+	}
+	head := string(raw)
+	if len(head) > 160 {
+		head = head[:160] + "..."
+	}
+	return fmt.Sprintf("%d bytes, neither object nor array: %q", len(raw), head)
+}
+
 func parseDeviceArray(raw json.RawMessage) ([]Device, error) {
 	var entries []struct {
 		Node struct {
@@ -498,7 +548,8 @@ func parseDeviceArray(raw json.RawMessage) ([]Device, error) {
 				OS: one.OSDesc, IP: one.IP, MeshId: one.MeshId,
 			}}, nil
 		}
-		return nil, fmt.Errorf("evilginx: parse getDeviceDetails reply")
+		return nil, fmt.Errorf("evilginx: parse getDeviceDetails reply: %s",
+			describeUnparsedReply(raw))
 	}
 	devices := make([]Device, 0, len(entries))
 	for _, e := range entries {
