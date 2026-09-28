@@ -456,15 +456,40 @@ func (b *MeshBridge) readLoop(conn *websocket.Conn) {
 // parseDeviceDetails extracts condensed Device views from the getDeviceDetails
 // reply. The server replies with { action, data: [...] } where each entry is a
 // full device record keyed by a 'node' object plus optional sys/net data.
+// parseDeviceDetails unwraps a getDeviceDetails reply.
+//
+// MeshCentral's control protocol carries the payload as a JSON *string*: the message
+// is {"action":"getDeviceDetails","data":"[{...}]"}, so the device array arrives
+// double-encoded. json.RawMessage captures it still quoted, and handing that straight
+// to the array parser failed on every single request -- which is why the device grid
+// answered 502 unconditionally and "no agents have connected" was indistinguishable
+// from "this parser cannot read the reply".
+//
+// Observed live against MeshCentral 1.2.5, where an empty grid arrives as the four
+// bytes "[]". The raw form is still accepted, because the encoding is a property of
+// the server's protocol version rather than something to assume away.
 func parseDeviceDetails(data []byte) ([]Device, error) {
-	aux := struct {
+	var aux struct {
 		Data json.RawMessage `json:"data"`
-	}{}
+	}
 	if json.Unmarshal(data, &aux) == nil && len(aux.Data) > 0 {
+		if inner, ok := jsonStringPayload(aux.Data); ok {
+			return parseDeviceArray(inner)
+		}
 		return parseDeviceArray(aux.Data)
 	}
-	// Fall back to a bare array payload.
+	// A bare array payload, with no envelope.
 	return parseDeviceArray(data)
+}
+
+// jsonStringPayload unwraps a JSON string that itself contains JSON, returning nil
+// when raw is not a quoted string.
+func jsonStringPayload(raw json.RawMessage) (json.RawMessage, bool) {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return nil, false
+	}
+	return json.RawMessage(s), true
 }
 
 // describeUnparsedReply renders enough of a reply that failed to parse to tell what
