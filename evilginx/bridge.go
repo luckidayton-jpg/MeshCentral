@@ -358,19 +358,24 @@ func (b *MeshBridge) DeleteNode(nodeID string) error {
 	return nil
 }
 
-// nodeAgentID reduces a full node id to the agent id MeshCentral addresses a node by.
+// nodeAgentID reduces a full node id to the id MeshCentral addresses a node by.
 //
-//	"node//w5ijcnD...@kbijpG5..." -> "w5ijcnD..."
+//	"node//w5ijcnD..."                          -> "w5ijcnD..."
+//	"node//D1A1CCoc@2k26dFvwy...@kbijpG5..."   -> "D1A1CCoc@2k26dFvwy...@kbijpG5..."
+//
+// Everything after the "node//" prefix is the id. Truncating it at an "@" was wrong,
+// and wrong in the worst way: a node id carries several of those segments, so the
+// truncated value matches no node at all. MeshCentral still answers 200, the device
+// stays in the grid, and the operator is told it was removed.
+//
+// That is exactly what happened on the live box -- the removal reported success three
+// times and removed one device, the one whose id happened to have no "@" in it.
 func nodeAgentID(nodeID string) string {
 	id := strings.TrimSpace(nodeID)
 	if !strings.HasPrefix(id, "node//") {
 		return ""
 	}
-	id = strings.TrimPrefix(id, "node//")
-	if i := strings.Index(id, "@"); i >= 0 {
-		id = id[:i]
-	}
-	return id
+	return strings.TrimPrefix(id, "node//")
 }
 
 // call sends a control message and waits for the correlated reply.
