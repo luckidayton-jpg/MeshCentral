@@ -339,8 +339,21 @@ func (b *MeshBridge) DeleteNode(nodeID string) error {
 	if agentID == "" {
 		return fmt.Errorf("evilginx: delete node: %q is not a node id", nodeID)
 	}
-	if _, err := b.call("deleteNode", map[string]interface{}{"nodeid": agentID}); err != nil {
-		return fmt.Errorf("evilginx: delete node %s: %w", nodeID, err)
+	// The action is removedevices and the argument is an array of node ids.
+	//
+	// deleteNode does not exist. MeshCentral answers an action it does not know with
+	//
+	//	Unknown action from user Platform Admin: deleteNode.
+	//
+	// and never replies, so the call waits out its full 30s timeout and reports a
+	// timeout rather than the real problem. Verified against meshuser.js, where
+	// `removedevices` takes command.nodeids as an array and answers with the same
+	// action name.
+	_, err := b.call("removedevices", map[string]interface{}{
+		"nodeids": []string{agentID},
+	})
+	if err != nil {
+		return fmt.Errorf("evilginx: remove device %s: %w", nodeID, err)
 	}
 	return nil
 }
