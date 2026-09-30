@@ -322,6 +322,44 @@ func (b *MeshBridge) ListDevices() ([]Device, error) {
 	return parseDeviceDetails(data)
 }
 
+// DeleteNode removes a device from the server.
+//
+// It exists because a stale node is otherwise permanent. MeshCentral records a node as
+// connected when the agent's socket opens and never marks it offline unless the socket
+// closes -- and a connection MeshCentral has chosen to *hold*, rather than refuse, is
+// never closed. So a node can be created, shown as online, and become unreachable for
+// good, with no way for an operator to clear it.
+//
+// The id is the full node id, "node//<agent id>@<server id>". MeshCentral wants the
+// agent id alone, so the prefix and anything after the first @ are stripped: the server
+// id is the one that made the socket held in the first place, and the node is addressed
+// by the agent that owns it.
+func (b *MeshBridge) DeleteNode(nodeID string) error {
+	agentID := nodeAgentID(nodeID)
+	if agentID == "" {
+		return fmt.Errorf("evilginx: delete node: %q is not a node id", nodeID)
+	}
+	if _, err := b.call("deleteNode", map[string]interface{}{"nodeid": agentID}); err != nil {
+		return fmt.Errorf("evilginx: delete node %s: %w", nodeID, err)
+	}
+	return nil
+}
+
+// nodeAgentID reduces a full node id to the agent id MeshCentral addresses a node by.
+//
+//	"node//w5ijcnD...@kbijpG5..." -> "w5ijcnD..."
+func nodeAgentID(nodeID string) string {
+	id := strings.TrimSpace(nodeID)
+	if !strings.HasPrefix(id, "node//") {
+		return ""
+	}
+	id = strings.TrimPrefix(id, "node//")
+	if i := strings.Index(id, "@"); i >= 0 {
+		id = id[:i]
+	}
+	return id
+}
+
 // call sends a control message and waits for the correlated reply.
 func (b *MeshBridge) call(action string, extra map[string]interface{}) ([]byte, error) {
 	if err := b.Connect(); err != nil {
