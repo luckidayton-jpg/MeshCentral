@@ -84,6 +84,12 @@ type MeshBridge struct {
 
 	writeMu sync.Mutex
 
+	// consoleMu guards consoleCollectors. Command output arrives as unsolicited
+	// frames carrying no responseid, so a run cannot be correlated by id and every
+	// open collector is offered every frame. See runcommand.go.
+	consoleMu         sync.Mutex
+	consoleCollectors []*consoleCollector
+
 	pendMu  sync.Mutex
 	pend    map[string]chan wsReply
 	pendAct map[string][]chan wsReply
@@ -475,6 +481,21 @@ func (b *MeshBridge) readLoop(conn *websocket.Conn) {
 		if json.Unmarshal(data, &probe) != nil {
 			continue
 		}
+		// Command output. This is an unsolicited frame: {action:'msg', type:'console',
+		// value:'...', nodeid:'...'}, with no responseid to correlate on, so it is
+		// handed to the console collectors instead of the pending-reply map. Missing
+		// this is why a run's output was invisible while its reply said "OK".
+		var cf struct {
+			Action string `json:"action"`
+			Type   string `json:"type"`
+			Value  string `json:"value"`
+			NodeID string `json:"nodeid"`
+		}
+		if json.Unmarshal(data, &cf) == nil && cf.Action == "msg" && cf.Type == "console" {
+			b.deliverConsole(cf.NodeID, cf.Value)
+			continue
+		}
+
 		reply := wsReply{data: data, action: probe.Action}
 		if probe.ResponseID == "" && probe.Action == "close" {
 			// Server-initiated disconnect (auth reject, bad origin, …).
