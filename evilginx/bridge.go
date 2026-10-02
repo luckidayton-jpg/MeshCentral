@@ -653,24 +653,6 @@ func parseDeviceArray(raw json.RawMessage) ([]Device, error) {
 		return nil, fmt.Errorf("evilginx: parse getDeviceDetails reply: %s",
 			describeUnparsedReply(raw))
 	}
-	// DIAG: one entry's key list, so the real field names are visible.
-	if len(entries) > 0 {
-		if raw, err := json.Marshal(entries[0]); err == nil {
-			var top map[string]json.RawMessage
-			keys := []string{}
-			if json.Unmarshal(raw, &top) == nil {
-				for k := range top {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-			}
-			trunc := raw
-			if len(trunc) > 900 {
-				trunc = trunc[:900]
-			}
-			fmt.Printf("DIAG-DEVICE-ENTRY keys=%v\nDIAG-DEVICE-ENTRY json=%s\n", keys, trunc)
-		}
-	}
 	devices := make([]Device, 0, len(entries))
 	for _, e := range entries {
 		dev := Device{
